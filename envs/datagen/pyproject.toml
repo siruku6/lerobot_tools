@@ -1,0 +1,136 @@
+# データを作るための環境
+#
+# Usage
+# ------
+#   uv sync --project envs/datagen
+#   （実際には envs/datagen/Dockerfile から venv_uv.sh 経由で呼ばれる）
+#
+# Effect
+# ------
+# シミュレータを回すものと、LeRobot 形式に変換するものが、1 つの venv に揃う。
+#
+#
+# なぜ 1 つの venv で足りるのか
+# ------
+# データ作りは 3 段ある。
+#
+#   1. _016_make_reverse.py      逆向きの課題定義と初期状態を作る（LIBERO）
+#   2. gripper_shift_sweep.py    シミュレータを回して .npz を書く（LIBERO）
+#   3. npz_to_lerobot.py         .npz を LeRobot 形式にする（lerobot）
+#
+# 1・2 は libero と robosuite しか import せず、3 は lerobot しか import しない。
+# どの段も両方を要求しないので、同じ venv に両方が在っても取り違えは起きない。
+#
+#
+# なぜ numpy 1.26.4 なのか
+# ------
+# ここで作ったデータは、評価のときに読み直される。**評価と同じ numpy で
+# 作らないと、同じコードが違う値を返しうる**（numpy 2 で dtype の昇格規則が
+# 変わった。NEP 50）。物理シミュレータが作る観測にそれが混ざると、
+# 静かにずれたデータが出来上がる。
+#
+# 評価は採点環境に合わせて numpy 1.26.4 なので、ここも 1.26.4 にする。
+#
+#
+# なぜ python 3.12 なのか
+# ------
+# lerobot v0.6.0 が requires-python >= 3.12 を宣言しており、動かせない。
+# LIBERO 側はこの版を要求しない（3.10 でも 3.12 でも入り、import も通ることを
+# 実測した）ので、lerobot に合わせている。
+#
+# 評価イメージが 3.10 なのは採点環境がそうだからで、LIBERO の都合ではない。
+#
+#
+# なぜ lerobot を --no-deps で入れるのか
+# ------
+# lerobot v0.6.0 は numpy>=2.0.0,<2.3.0 を宣言している。普通に入れると
+# numpy が 2 系に上がり、上に書いた理由で困る。**宣言を解決器に渡さない**
+# ことで numpy を守る。提出物が vendoring で同じことをしている。
+#
+# **迂回した分の責任はこちらが持つ。** lerobot の依存は下に自分で並べてある。
+# 版を書いていないものは lerobot の宣言をそのまま写した。
+# （av を版指定なしで入れて import が壊れたことがある。2026-09-21）
+[project]
+name = "lerobot-tools-datagen"
+version = "0.1.0"
+description = "データを作るための環境（シミュレータと LeRobot 形式への変換）"
+requires-python = ">=3.12"
+
+dependencies = [
+    # --- 全体を貫く版 ---
+    "numpy==1.26.4",            # 上の注記のとおり。上げてはいけない
+    "torch==2.11.0+cu130",
+
+    # --- 1・2 段目: シミュレータを回す（LIBERO-plus が import するもの） ---
+    "bddl==3.6.0",
+    "cloudpickle==3.1.2",
+    "easydict==1.13",
+    "gym==0.25.2",
+    "h5py>=3.16.0",
+    "imageio>=2.37.0",          # **明示する。** 以前は scikit-image の依存として
+                                # しか入っておらず、そちらを外すと連鎖して壊れた
+    "matplotlib>=3.10.9",
+    "mujoco==3.7.0",
+    "opencv-python-headless==4.11.0.86",
+    "robosuite==1.4.0",
+    "scikit-image>=0.25.2",
+    "scipy>=1.15.3",
+    "termcolor>=3.3.0",
+    "tqdm>=4.70.0",
+    "wand==0.7.2",              # libMagickWand への ctypes バインディング。
+                                # 共有ライブラリは apt_sim_deps.sh が入れる
+    "PyYAML>=6.0.3",
+    "pillow>=12.3.0",
+
+    # --- 3 段目: LeRobot 形式に変換する ---
+    # lerobot 本体は --no-deps で入れる（Dockerfile 参照）。numpy>=2.0.0 という
+    # 宣言を解決器に渡さないためである。**迂回した分の依存はここが持つ。**
+    #
+    # 下の一覧は lerobot v0.6.0 の lerobot[dataset] の宣言から起こしてある。
+    # 手で並べると抜ける（gymnasium / cmake / setuptools を落として import が
+    # 壊れた。2026-09-21）。lerobot を上げるときは、この一覧を宣言と
+    # 突き合わせ直すこと。
+    "nvidia-npp-cu12",          # torchcodec が NPP へ直接リンクする。
+                                # 場所を動的リンカに教えるのは register_npp.sh
+
+    "av==15.1.0",               # 宣言は >=15.0.0,<16.0.0。範囲のままだと
+                                # module 'av' has no attribute 'option' で
+                                # import が壊れる版が入りうる（2026-09-21 実測）
+    "cmake>=3.29.0.1,<4.2.0",
+    "datasets>=4.7.0,<5.0.0",
+    "draccus==0.10.0",
+    "einops>=0.8.0,<0.9.0",
+    "gymnasium>=1.1.1,<2.0.0",
+    "huggingface-hub>=1.0.0,<2.0.0",
+    "jsonlines>=4.0.0,<5.0.0",
+    "opencv-python-headless>=4.9.0,<4.14.0",
+    "packaging>=24.2,<26.0",
+    "pandas>=2.0.0,<3.0.0",
+    "Pillow>=10.0.0,<13.0.0",
+    "pyarrow>=21.0.0,<30.0.0",
+    "requests>=2.32.0,<3.0.0",
+    "safetensors>=0.4.3,<1.0.0",
+    "setuptools>=71.0.0,<81.0.0",
+    "termcolor>=2.4.0,<4.0.0",
+    "torchcodec==0.11.1",
+    "torchvision==0.26.0",
+    "tqdm>=4.66.0,<5.0.0",
+    # --- 作業で使うもの ---
+    "msgpack==1.2.1",
+    "requests>=2.34.2",
+    "pytest>=9.1.1",
+]
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+
+# torch 三点だけ pytorch の index に縛る。
+# nvidia-npp-cu12 はそちらのミラーに無いので素の PyPI から解決させる。
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+torchcodec = { index = "pytorch" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu130"

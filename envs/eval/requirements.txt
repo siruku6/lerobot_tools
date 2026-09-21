@@ -1,0 +1,70 @@
+# 評価用 venv に入れるもの
+#
+# Usage
+# ------
+#   envs/eval/steps/venv.sh がこのファイルを pip install -r で読む
+#
+# Effect
+# ------
+# 採点環境と同じ顔ぶれの venv が出来る。
+#
+#
+# 何を基準に並べているか
+# ------
+# 採点環境の setup.sh が入れているものを、そのまま保つことを基準にしている。
+# 評価パイプラインが使わないものも残す。参加者の提出物が import する可能性が
+# あり、採点側に在るものをこちらで落とすと、ローカルで通って本番で落ちる
+# という向きの食い違いが生まれるためである。
+#
+# torch と numpy もここに書く。以前は versions.env に持たせていたが、
+# 版は環境ごとに違う（train は numpy 2.2.6 / torch は cu128）ため、
+# 共通の場所に置くと名前が増えて、どれがどこで使われるか分からなくなる。
+#
+# torch は PyPI の既定 wheel ではなく PyTorch の index から入れる。
+# その指定は下の --extra-index-url が持つ。
+#
+# 印の意味:
+#   [libero]  LIBERO-plus 本体が import する
+#   [eval]    評価パイプラインが import する
+#   [保険]    どちらも import しないが、採点環境に在るので残す
+
+# PyTorch の index。採点環境と同じ CUDA 13 の wheel を使う。
+--extra-index-url https://download.pytorch.org/whl/cu130
+
+numpy==1.26.4                      # 採点環境と同じ。上げてはいけない。
+                                   # numpy 2 で dtype の昇格規則（NEP 50）が
+                                   # 変わり、同じコードが違う値を返しうる
+torch==2.11.0                      # 採点環境と同じ。上の index から cu130 が入る
+
+bddl==3.6.0                        # [libero]
+cloudpickle==3.1.2                 # [libero]
+easydict==1.13                     # [libero]
+gym==0.25.2                        # [libero]
+mujoco==3.7.0                      # [libero]
+robosuite==1.4.0                   # [libero]
+opencv-python-headless==4.11.0.86  # [libero] cv2
+wand==0.7.2                        # [libero] envs/env_wrapper.py が使う。
+                                   #          共有ライブラリは apt_sim_deps.sh が入れる
+h5py                               # [libero]
+Pillow                             # [libero] PIL
+scipy                              # [libero]
+scikit-image                       # [libero] skimage
+matplotlib                         # [libero]
+termcolor                          # [libero]
+tqdm                               # [libero]
+pyyaml                             # [libero] yaml
+huggingface_hub                    # [libero]
+
+imageio                            # [eval]  直接 import されるのに、以前は
+                                   #         scikit-image の依存としてしか入って
+                                   #         いなかった。明示して固定する
+msgpack                            # [eval]  ポリシーサーバとの通信
+requests                           # [eval]
+packaging                          # [eval]  validate_submission.py が使う
+psutil                             # [eval]  validate_submission.py が使う
+
+hydra-core==1.3.2                  # [保険] 使うのは libero/lifelong/ だけ
+einops==0.8.2                      # [保険] 同上
+fastapi                            # [保険] 提出物の policy_server.py が使う
+uvicorn                            # [保険] 同上
+pytest                             # [保険] テストを回すとき用

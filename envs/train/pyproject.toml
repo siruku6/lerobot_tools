@@ -1,0 +1,92 @@
+# 学習のための環境
+#
+# Usage
+# ------
+#   uv sync --project envs/train --extra training
+#   （実際には envs/train/Dockerfile から venv_uv.sh 経由で呼ばれる）
+#
+# Effect
+# ------
+# LeRobot 形式のデータで学習を回せる venv が出来る。
+#
+#
+# なぜ datagen と分けるのか
+# ------
+# numpy が違う。datagen は評価と同じ 1.26.4 で揃える必要があるが、
+# 学習はこれまで 2.2.6 で回してきた（2026-09-17 の学習イメージの記録で確認）。
+# 実績のある版を動かす理由が無いので、そのままにしてある。
+#
+# 役割も違う。datagen はデータを作り、ここはそれを使う。
+#
+#
+# なぜ numpy を 2.2.6 に固定するのか
+# ------
+# 以前は固定しておらず、lerobot の numpy>=2.0.0,<2.3.0 を解決器が解いた
+# 結果として 2.2.6 が入っていた。**解いた結果は、いつ解くかで変わる。**
+# これまで学習に使ってきた版をそのまま書いておく。
+#
+#
+# なぜ python 3.12 なのか
+# ------
+# lerobot v0.6.0 が requires-python >= 3.12 を宣言しており、動かせない。
+#
+#
+# なぜ PyPI から入れる（git clone しない）のか
+# ------
+# 移行元は v0.6.0 のタグを clone して pip install -e していたが、
+# PyPI の 0.6.0 は同じ版であり、必要な extras（dataset / training / pi）も
+# 揃っている。clone の取り回しを持ち込む理由が無い。
+#
+# datagen 側が --no-deps で入れているのとは事情が違う。あちらは numpy の
+# 宣言を迂回する必要があるが、ここは宣言のとおりで構わない。
+[project]
+name = "lerobot-tools-lerobot"
+version = "0.1.0"
+description = "LeRobot 形式のデータを扱うための環境（numpy 2.x 系）"
+requires-python = ">=3.12"
+
+dependencies = [
+    # **torch / torchcodec / torchvision は版だけでなく CUDA の系統も対で決まる。**
+    # torchcodec は依存を一切宣言しないのに torch の ABI へ直接リンクしている。
+    # pip は不整合を検出できず、インストールは成功して実行時に落ちる。
+    # 版は LeRobot v0.6.0 の uv.lock が解決した組み合わせに揃えてある。
+    "torch==2.11.0+cu128",
+    "torchvision==0.26.0",
+    "torchcodec==0.11.1",
+
+    # torchcodec のコアが CUDA の NPP（画像・色空間変換）へ直接リンクしている。
+    # torch 自身は NPP を使わないため、torch の wheel 群には含まれない。
+    # **入れるだけでは足りない。** 動的リンカに場所を教える必要があり、
+    # それは scripts/steps/register_npp.sh が行う。
+    "nvidia-npp-cu12",
+
+    # **numpy を固定する。** 宣言（>=2.0.0,<2.3.0）に任せると、解く時期で
+    # 版が変わる。これまで学習に使ってきた 2.2.6 を書いておく。
+    "numpy==2.2.6",
+
+    # **av も固定する。** lerobot の宣言は >=15.0.0,<16.0.0 だが、
+    # 範囲の中で版が動くと import が壊れることがある
+    # （datagen 側で module 'av' has no attribute 'option' を実測。2026-09-21）
+    "av==15.1.0",
+
+    # データの読み書きだけ。学習用の一式は下の extra にある。
+    "lerobot[dataset]==0.6.0",
+]
+
+[project.optional-dependencies]
+# 学習イメージはこちらを使う: uv sync --extra training
+training = ["lerobot[training,pi]==0.6.0"]
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+
+# **torch 三点だけを pytorch の index に縛る。** nvidia-npp-cu12 は
+# そちらのミラーに無いので、素の PyPI から解決させる。
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+torchcodec = { index = "pytorch" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu128"

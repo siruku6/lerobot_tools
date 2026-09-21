@@ -1,0 +1,38 @@
+# ビルドコンテキストに大きなものを載せないための除外。
+#
+# **この除外が唯一の防波堤である。** docker はコンテキスト全体を先にデーモンへ
+# 転送するため、ここに書き漏らしたディレクトリにデータを置いた時点で、
+# ビルドの前に数十 GB の転送が走る。PARC2026_pre/.dockerignore には
+# 「work/ を入れるとビルド前に 91GB の転送が走る」という、実際に踏みかけた
+# 記録が残っている。同じ穴を塞ぐ。
+
+.git/
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+
+# 仮想環境。イメージの中で作り直す
+venv/
+.venv/
+.uv-cache/
+
+# データの実体。イメージに入れるものは 1 つも無い
+data/
+datasets/
+outputs/
+work/
+*.tar
+*.tar.gz
+*.zip
+*.safetensors
+*.hdf5
+*.mp4
+
+# step が取り直せる取得物
+LIBERO/
+LIBERO-plus/
+
+# マシン固有の設定（versions.env は --build-arg で渡す。COPY しない）
+.env
+versions.env

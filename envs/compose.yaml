@@ -1,0 +1,111 @@
+# 用途コンテナの起動定義
+#
+# Usage
+# ------
+#   ./datactl.sh build <用途>   # eval / datagen / train
+#   ./datactl.sh up    <用途>
+#
+# Effect
+# ------
+# 用途ごとのコンテナが立つ。LIBERO のデータをどこから持ってくるかは、
+# このファイルの libero-data アンカー 1 箇所だけが決めている。
+#
+#
+# なぜ profiles で 1 ファイルにまとめているのか
+# ------
+# YAML のアンカー（&libero-data）はファイルをまたげない。用途ごとにファイルを
+# 分けると、同じマウント定義を 3 回書くことになり、1 つ直し忘れたときに
+# 「ある用途だけ違うデータを見ている」という形で静かに壊れる。
+#
+#
+# なぜ train にはデータイメージを渡さないのか
+# ------
+# 学習は LeRobot 形式のデータを読むだけで、シミュレータを動かさない。
+# LIBERO のアセットも bddl も要らない。
+
+x-libero-data: &libero-data
+  type: image
+  source: ${LIBERO_DATA_TAG}
+  image:
+    subpath: data
+  target: /opt/libero
+  read_only: true
+
+x-libero-env: &libero-env
+  LIBERO_CONFIG_PATH: /opt/libero/config
+  LIBERO_ROOT: /opt/libero/LIBERO-plus
+  PYTHONPATH: /opt/libero/LIBERO-plus
+  MUJOCO_GL: egl
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+services:
+  # 採点環境の再現。評価に使う。
+  eval:
+    profiles: [eval]
+    build:
+      context: ..
+      dockerfile: envs/eval/Dockerfile
+    image: lerobot-tools-eval:latest
+    volumes:
+      - *libero-data
+      - ../:/work
+    environment:
+      <<: *libero-env
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics
+    <<: *gpu
+    working_dir: /work
+    shm_size: "20gb"
+    init: true
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+
+  # データを作る。シミュレータを回し、LeRobot 形式に変換するまで。
+  datagen:
+    profiles: [datagen]
+    build:
+      context: ..
+      dockerfile: envs/datagen/Dockerfile
+    image: lerobot-tools-datagen:latest
+    volumes:
+      - *libero-data
+      - ../:/work
+      - ${DATA_DIR:-../data}:/data
+    environment:
+      <<: *libero-env
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics
+    <<: *gpu
+    working_dir: /work
+    shm_size: "20gb"
+    init: true
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+
+  # 学習。LIBERO を使わないのでデータイメージも要らない。
+  train:
+    profiles: [train]
+    build:
+      context: ..
+      dockerfile: envs/train/Dockerfile
+    image: lerobot-tools-train:latest
+    volumes:
+      - ../:/work
+      - ${DATA_DIR:-../data}:/data
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    <<: *gpu
+    working_dir: /work
+    shm_size: "20gb"
+    init: true
+    stdin_open: true
+    tty: true
+    command: ["bash"]
