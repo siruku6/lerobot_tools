@@ -151,6 +151,12 @@ dependencies = [
     "msgpack==1.2.1",
     "requests>=2.34.2",
     "pytest>=9.1.1",
+
+    # データを対話的に調べるための notebook 環境（compose.yaml の jupyter サービス）。
+    # メタパッケージなので jupyterlab / notebook / ipykernel などが一緒に入る。
+    # **numpy を引かないので、この image の numpy 1.26.4 は動かない**
+    # （uv の解決で numpy が候補に出ないことを確認。2026-09-21）。
+    "jupyter==1.1.1",
 ]
 
 [tool.uv]

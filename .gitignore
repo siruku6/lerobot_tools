@@ -181,3 +181,7 @@ outputs/
 work/
 LIBERO/
 LIBERO-plus/
+
+# wandb がカレントディレクトリに作る作業ディレクトリ
+# （lerobot は outputs/ 配下を指定するが、直接 wandb を使う場合の保険）
+wandb/

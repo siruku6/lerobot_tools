@@ -79,7 +79,32 @@ dependencies = [
     "av==15.1.0",
 
     # 学習に要る一式（dataset を内包する）。
-    "lerobot[training,pi]==0.6.0",
+    # **extra を 4 つ指定している。** どれも足りないと import か実行時に落ちる。
+    #   training … 学習一式（dataset を内包する）
+    #   pi       … pi0 / pi05 系の policy
+    #   peft     … LoRA。smolvla は対応しているが（policies/smolvla/
+    #              modeling_smolvla.py の _get_default_peft_targets）、
+    #              peft 本体はこの extra が無いと入らない
+    #   smolvla  … smolvla を動かすのに要る。transformers の SmolVLM processor が
+    #              num2words を要求する（無いと policy の生成時に ImportError）
+    "lerobot[training,pi,peft,smolvla]==0.6.0",
+
+    # 上の extra が引くものだが、宣言が範囲（peft>=0.18.0,<1.0.0 /
+    # num2words>=0.5.14,<0.6.0）なので、解く時期でバージョンが変わる。
+    # **実際に動かしたものに固定する。**
+    "peft==0.21.0",
+    "num2words==0.5.14",
+
+    # --- 学習の経過を記録するためのもの ---
+    # **これは lerobot[training] が既に引いてくる。** それでも明示して固定するのは、
+    # 学習の記録先として意図して使うものであり、lerobot の宣言が緩む・変わる形で
+    # 静かにバージョンが動くのを避けたいからである。lerobot 側の宣言と食い違えば
+    # 依存の衝突として止まる（docs/architecture.md の規約 2）。
+    #
+    # lerobot は `--wandb.enable=true` と `--wandb.project=<名前>` の両方が
+    # 揃ったときだけ記録する（lerobot/scripts/lerobot_train.py:235）。
+    # 認証は WANDB_API_KEY 環境変数で渡す（compose.yaml の train サービス）。
+    "wandb==0.27.2",
 ]
 
 [tool.uv]

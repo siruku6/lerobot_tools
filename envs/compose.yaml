@@ -3,7 +3,7 @@
 # Usage
 # ------
 #   ./datactl.sh build <用途>   # eval / datagen / train
-#   ./datactl.sh up    <用途>
+#   ./datactl.sh up    <用途>   # eval / datagen / train / jupyter
 #
 # Effect
 # ------
@@ -22,6 +22,47 @@
 # ------
 # 学習は LeRobot 形式のデータを読むだけで、シミュレータを動かさない。
 # LIBERO のアセットも bddl も要らない。
+#
+#
+# jupyter は何なのか
+# ------
+# **新しい image ではない。** datagen image をそのまま使い、起動するコマンドと
+# ポートだけを差し替えたサービスである。そのため build も要らない
+# （datagen を焼けばそのまま使える）。データを対話的に調べるのはデータを作る側の
+# 仕事なので、この image に寄せてある。
+#
+#
+# 重いものは image にもコンテナにも入れない
+# ------
+# **データセット・重み・チェックポイントは、すべてホスト側のディレクトリを
+# bind mount して読み書きする。** image に焼くと build のたびに数十 GB が増え、
+# コンテナの中に置くと `--rm` で消えて取り直しになる。
+# 置き場は envs/.env で指定する（HF_CACHE_DIR / DATA_DIR / OUTPUT_DIR）。
+#
+#   /data      … 作ったデータセットなど、自分で用意するもの
+#   /datasets  … 手元にある既存のデータセット（**読み取り専用**）
+#   /outputs   … 学習の出力（チェックポイント・wandb の作業ファイル）
+#   /reference … 移行元のリポジトリ（**読み取り専用**）。eval だけが使う。
+#                評価の採点処理そのものを写さず、原本をそのまま動かすため
+#   /hf       … HuggingFace から取った重みとデータセット（HF_HOME でここを指す）
+#
+# **datagen と train はホストのユーザーで動かす**（user: の指定）。root で動かすと
+# 書いたファイルがホスト側で root 所有になり、消すにも sudo が要る。実際にそれで
+# 学習の出力を消せなくなった。eval だけは採点環境と同じ条件を保つため root のまま。
+#
+# HF のキャッシュを /root/.cache ではなく /hf に置いているのは、この user: 指定と
+# 両立させるためである。root 以外では /root を辿れない。
+#
+# image に入っているのは venv だけである（実測で /opt/venv 以外に重いものは無い）。
+# 例外は libero-data image が持つ LIBERO のアセット 9.5GB で、これは
+# バージョンが付いて変わらない読み取り専用のデータだから image にしてある。
+#
+#
+# 学習の経過はどこで見るのか
+# ------
+# **wandb（web サービス）へ送る。** そのため可視化用のコンテナは立てない。
+# train サービスが WANDB_* の環境変数を受け取り、lerobot がそれを使って送る。
+# 値はリポジトリ直下の .env に置く（datactl.sh が読み込む。.env は gitignore 済み）。
 
 x-libero-data: &libero-data
   type: image
@@ -31,20 +72,101 @@ x-libero-data: &libero-data
   target: /opt/libero
   read_only: true
 
-x-libero-env: &libero-env
+# ホストのユーザーで動かす（user: 指定）ための環境変数一式。
+#
+# - HF_HOME: HuggingFace のキャッシュの場所。**/root 配下に置かない**
+#   （root 以外は /root を辿れない）。ここを指すと hub のキャッシュ（/hf/hub）も
+#   lerobot のキャッシュ（/hf/lerobot）もまとめて移る（実測で確認）。
+# - HOME: root 以外でも書ける場所を指す。
+# - USER / LOGNAME: **uid だけ渡してもユーザー名は引けない。**
+#   コンテナの /etc/passwd に uid 1000 の行が無いため、python の
+#   getpass.getuser() が KeyError になる（torch の inductor が呼ぶ）。
+#   getpass は LOGNAME / USER を先に見る実装なので、渡しておけば解決する。
+x-nonroot-env: &nonroot-env
+  HF_HOME: /hf
+  HOME: /tmp
+  USER: ${HOST_USER:-ubuntu}
+  LOGNAME: ${HOST_USER:-ubuntu}
+
+x-libero-env: &libero-env-map
   LIBERO_CONFIG_PATH: /opt/libero/config
   LIBERO_ROOT: /opt/libero/LIBERO-plus
   PYTHONPATH: /opt/libero/LIBERO-plus
   MUJOCO_GL: egl
+  # EGL で描画するので graphics が要る
+  NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics
 
+# **GPU は使うサービスだけが書く。** 下の x-datagen / x-train には入れていない。
 x-gpu: &gpu
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: all
-            capabilities: [gpu]
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: all
+          capabilities: [gpu]
+
+# datagen image を使うサービスの共通部分。
+# **アンカーの中に YAML のマージキー（<<）を置かない。** 入れ子のマージは
+# パーサによって解釈が変わるため、環境変数も別のアンカーを直接指している。
+x-datagen: &datagen
+  image: lerobot-tools-datagen:latest
+  build:
+    context: ..
+    dockerfile: envs/datagen/Dockerfile
+  volumes:
+    - *libero-data
+    - ../:/work
+    - ${DATA_DIR:-../data}:/data
+    # 学習の出力。**ホスト側に置く**（チェックポイントは 1 つ数 GB になりうる）。
+    - ${OUTPUT_DIR:-../outputs}:/outputs
+    # **手元にある既存のデータセットを読む。** 読み取り専用にしてある。
+    # 移行元のリポジトリ（PARC2026_pre）の成果物などを指すことがあり、
+    # そちらは読むだけで変更しない約束なので、書けないようにしておく。
+    - ${DATASETS_DIR:-../data}:/datasets:ro
+    # **HuggingFace のキャッシュをホストと共有する。** 重みやデータセットは
+    # 数 GB になるので、コンテナを捨てるたびに再取得したくない。
+    - ${HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/hf
+  environment:
+    # LIBERO の設定と HF キャッシュの場所を両方取り込む
+    <<: [*libero-env-map, *nonroot-env]
+  user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+  working_dir: /work
+  shm_size: "20gb"
+  init: true
+
+# train image を使うサービスの共通部分。
+x-train: &train
+  image: lerobot-tools-train:latest
+  build:
+    context: ..
+    dockerfile: envs/train/Dockerfile
+  volumes:
+    - ../:/work
+    - ${DATA_DIR:-../data}:/data
+    # 学習の出力。**ホスト側に置く**（チェックポイントは 1 つ数 GB になりうる）。
+    - ${OUTPUT_DIR:-../outputs}:/outputs
+    # **手元にある既存のデータセットを読む。** 読み取り専用にしてある。
+    # 移行元のリポジトリ（PARC2026_pre）の成果物などを指すことがあり、
+    # そちらは読むだけで変更しない約束なので、書けないようにしておく。
+    - ${DATASETS_DIR:-../data}:/datasets:ro
+    # **HuggingFace のキャッシュをホストと共有する。** 重みやデータセットは
+    # 数 GB になるので、コンテナを捨てるたびに再取得したくない。
+    - ${HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/hf
+  environment:
+    <<: *nonroot-env
+    NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    # 学習の記録を wandb へ送るための設定。**値は .env が持つ**（gitignore 済み）。
+    # 未設定なら空のまま渡り、lerobot 側の既定（wandb.enable=false）で記録しない。
+    WANDB_API_KEY: ${WANDB_API_KEY:-}
+    WANDB_PROJECT: ${WANDB_PROJECT:-}
+    WANDB_ENTITY: ${WANDB_ENTITY:-}
+    # online / offline / disabled。offline にすると送らずに手元へ溜める
+    # （後から `wandb sync <dir>` で送れる）。
+    WANDB_MODE: ${WANDB_MODE:-online}
+  user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+  working_dir: /work
+  shm_size: "20gb"
+  init: true
 
 services:
   # 採点環境の再現。評価に使う。
@@ -57,10 +179,17 @@ services:
     volumes:
       - *libero-data
       - ../:/work
+      - ${OUTPUT_DIR:-../outputs}:/outputs
+      # **移行元のリポジトリを読み取り専用で見せる。**
+      # 評価の採点処理（pipeline/）は原本をそのまま動かす。写すと採点の内容が
+      # 少しずつずれていき、「手元では通るのに本番で違う」向きの食い違いを作る。
+      - ${REFERENCE_REPO:-../../PARC2026_pre}:/reference:ro
     environment:
-      <<: *libero-env
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics
-    <<: *gpu
+      <<: *libero-env-map
+      # 評価器は /reference の pipeline と compe を import する。
+      # LIBERO 本体のパスは *libero-env-map が持っているので、その後ろに足す。
+      PYTHONPATH: /reference:/opt/libero/LIBERO-plus
+    deploy: *gpu
     working_dir: /work
     shm_size: "20gb"
     init: true
@@ -70,42 +199,39 @@ services:
 
   # データを作る。シミュレータを回し、LeRobot 形式に変換するまで。
   datagen:
+    <<: *datagen
     profiles: [datagen]
-    build:
-      context: ..
-      dockerfile: envs/datagen/Dockerfile
-    image: lerobot-tools-datagen:latest
-    volumes:
-      - *libero-data
-      - ../:/work
-      - ${DATA_DIR:-../data}:/data
-    environment:
-      <<: *libero-env
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics
-    <<: *gpu
-    working_dir: /work
-    shm_size: "20gb"
-    init: true
+    deploy: *gpu
     stdin_open: true
     tty: true
     command: ["bash"]
 
+  # datagen image で jupyter を立てる。データを対話的に調べるためのもの。
+  #
+  # **アクセストークンは demo に固定してある**（移行元の構成と同じ。利用者の判断）。
+  # 開くのは http://127.0.0.1:${JUPYTER_PORT:-5001}/lab?token=demo である。
+  # 固定値なので、ポートを外部に晒す場所で使うときは JUPYTER_TOKEN を変えること。
+  jupyter:
+    <<: *datagen
+    profiles: [jupyter]
+    deploy: *gpu
+    ports:
+      - "${JUPYTER_PORT:-5001}:${JUPYTER_PORT:-5001}"
+    command:
+      - jupyter
+      - lab
+      - --no-browser
+      - --allow-root
+      - --ip=0.0.0.0
+      - --port=${JUPYTER_PORT:-5001}
+      - --ServerApp.root_dir=/work
+      - --IdentityProvider.token=${JUPYTER_TOKEN:-demo}
+
   # 学習。LIBERO を使わないのでデータイメージも要らない。
   train:
+    <<: *train
     profiles: [train]
-    build:
-      context: ..
-      dockerfile: envs/train/Dockerfile
-    image: lerobot-tools-train:latest
-    volumes:
-      - ../:/work
-      - ${DATA_DIR:-../data}:/data
-    environment:
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    <<: *gpu
-    working_dir: /work
-    shm_size: "20gb"
-    init: true
+    deploy: *gpu
     stdin_open: true
     tty: true
     command: ["bash"]
