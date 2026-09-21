@@ -227,6 +227,36 @@ services:
       - --ServerApp.root_dir=/work
       - --IdentityProvider.token=${JUPYTER_TOKEN:-demo}
 
+  # 外部サービスとのやり取り。学習も評価もしない。
+  #
+  # **GPU を持たない**（deploy: *gpu が無い）。評価が /outputs に書いた軌道と
+  # フレームを wandb へ送る、HuggingFace から取る・上げる、といった処理を受け持つ。
+  # 重いイメージを起こさずに通信だけを済ませるために分けてある。
+  io:
+    profiles: [io]
+    build:
+      context: ..
+      dockerfile: envs/io/Dockerfile
+    image: lerobot-tools-io:latest
+    volumes:
+      - ../:/work
+      # 評価と学習の出力を読む。**ここが主な入力である。**
+      - ${OUTPUT_DIR:-../outputs}:/outputs
+      - ${DATASETS_DIR:-../data}:/datasets:ro
+      - ${HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/hf
+    environment:
+      <<: *nonroot-env
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      WANDB_PROJECT: ${WANDB_PROJECT:-}
+      WANDB_ENTITY: ${WANDB_ENTITY:-}
+      WANDB_MODE: ${WANDB_MODE:-online}
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    working_dir: /work
+    init: true
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+
   # 学習。LIBERO を使わないのでデータイメージも要らない。
   train:
     <<: *train

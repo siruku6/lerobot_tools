@@ -100,7 +100,7 @@ build-data)
 
 build)
     # 用途イメージを焼く。データイメージは別（build-data）。
-    PROFILE="${2:?用途を指定してください: eval / datagen / train}"
+    PROFILE="${2:?用途を指定してください: eval / datagen / train / io}"
     # jupyter は専用の image を持たない。datagen image を別のコマンドで
     # 起動するだけのサービスなので、焼く対象が違う。
     case "$PROFILE" in
@@ -114,11 +114,11 @@ build)
     ;;
 
 up)
-    PROFILE="${2:?用途を指定してください: eval / datagen / train / jupyter}"
+    PROFILE="${2:?用途を指定してください: eval / datagen / train / io / jupyter}"
     shift 2 || true
     # train は LIBERO を使わないので、データイメージも要らない。
     case "$PROFILE" in
-    train) ;;
+    train|io) ;;
     *)
         docker image inspect "$DATA_TAG" >/dev/null 2>&1 \
             || { echo "ERROR: $DATA_TAG がありません -> ./datactl.sh build-data" >&2; exit 1; }
