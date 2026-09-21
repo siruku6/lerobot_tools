@@ -1,20 +1,33 @@
 #!/usr/bin/env bash
+# LeRobot形式データセットの動画（カメラ画像）をデコードする処理に必要な、
+# FFmpeg の共有ライブラリを OS に install する script
+#
 # 入力: なし
 # 出力: システムに FFmpeg の共有ライブラリが入る
 # 事後条件: libavutil が ldconfig から見える
 #
 # 必要な外部コマンド: apt-get（Debian / Ubuntu 系）
 #
-# **torchcodec は FFmpeg の共有ライブラリに dlopen で繋ぐ。**
-# pip の torchcodec には .so が同梱されておらず、システム側の libavutil /
-# libavcodec / libavformat が要る。無いと import の時点で落ちる:
+# LeRobot 形式のデータセットは、カメラ画像をエピソードごとに動画（mp4）として
+# 圧縮して保存する（生の画像のまま保存すると容量が大きすぎるため）。
+# 学習・推論時に特定フレームの画像がそのまま必要になるので、lerobot は torchcodec という
+# 動画デコーダを使い、指定したフレームだけを圧縮データから生のピクセル値に復元する。
 #
-#   OSError: libavutil.so.59: cannot open shared object file
+# **torchcodec は FFmpeg の共有ライブラリに dlopen で直接つなぐ**（pip パッケージの
+# 中には .so を同梱していない）。ここから次の 2 点が導かれる。
 #
-# torchcodec は FFmpeg 4〜7 のどれかを順に探すので、版は合わせなくてよい。
-# apt の ffmpeg を入れれば、その土台に合った版が入る。
+#   1. システム側に libavutil / libavcodec / libavformat が無いと、
+#      import の時点で落ちる（実際に起きるエラー）:
 #
-# **lerobot 側の依存であり、LIBERO 側とは関係がない**（apt_sim_deps.sh と分けてある）。
+#        OSError: libavutil.so.59: cannot open shared object file
+#
+#   2. torchcodec は FFmpeg 4〜7 のどれかを順に探して見つかったものにつなぐため、
+#      入れる FFmpeg のバージョンを厳密に合わせる必要はない。apt の ffmpeg を
+#      入れれば、その土台に合ったバージョンが自動的に入る。
+#
+# なお、これは LeRobot 形式データセットの動画デコードに要る依存であり、
+# シミュレーションの観測画像を生成・加工する処理（apt_sim_deps.sh が担当）とは
+# 関係がない（そのためファイルを分けてある）。
 set -euo pipefail
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_here/../lib/log.sh"
