@@ -16,15 +16,17 @@
 #     `wand` 自体は pip で入るが、その実体である ImageMagick の共有ライブラリは
 #     pip では入らない。
 #
-#   - libgl1 / libegl1 / libglib2.0-0 と、下の (未確認) 印が付いたもの:
+#   - libgl1 / libegl1 / libglib2.0-0 ほかの GL 系:
 #     mujoco / robosuite がシミュレーションの観測画像（カメラ映像）を描画するために
 #     使う OpenGL 関連ライブラリ。mujoco はどの描画バックエンド（EGL / OSMesa / GLFW
 #     など）を使うかを実行時に **dlopen で決める**ため、コードを読むだけ（import の
 #     静的解析）では、どのライブラリが実際に必要かが分からない。
 #
-# **「(未確認)」は、削除しても動くかどうかまだ確かめていない、という印である。**
-# ここに並ぶものは移行元の setup.sh から丸ごと引き継いでおり、全部が本当に
-# 必要かどうかは検証していない。
+# **GL 系は全部入れる。絞り込まないと決めた**（利用者の判断。2026-09-21）。
+# 顔ぶれは移行元（PARC2026_pre / b_PARC2026_final の setup.sh）から丸ごと引き継いで
+# おり、1 つずつ外して確かめる作業はしていない。この image の目的が採点環境との
+# 一致であるため、採点側に在るものを落とすと「ローカルで通って本番で落ちる」向きの
+# 食い違いを作るからである。
 set -euo pipefail
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_here/../lib/log.sh"
@@ -51,9 +53,9 @@ $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-rec
     libmagickwand-dev \
     `# mujoco / robosuite の描画（GL 系）に要る。` \
     libgl1 libegl1 libglib2.0-0 \
-    libosmesa6 libosmesa6-dev `# (未確認) MUJOCO_GL=egl しか使わないなら不要かもしれない` \
-    libglfw3 libglew-dev      `# (未確認) 画面表示をしないなら不要かもしれない` \
-    libsm6 libxext6 libxrender1 `# (未確認) opencv-python-headless なら X11 は不要かもしれない` \
+    libosmesa6 libosmesa6-dev `# MUJOCO_GL=osmesa を選んだ場合の描画バックエンド` \
+    libglfw3 libglew-dev      `# GLFW バックエンドと GL 拡張の解決` \
+    libsm6 libxext6 libxrender1 `# X11 系。headless でない opencv が入った場合の保険` \
     ${APT_EXTRA:-}
 $SUDO rm -rf /var/lib/apt/lists/*
 
