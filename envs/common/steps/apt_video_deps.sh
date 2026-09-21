@@ -31,10 +31,11 @@
 set -euo pipefail
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_here/../lib/log.sh"
+. "$_here/../lib/guard.sh"
 
 step "FFmpeg の共有ライブラリ（torchcodec 用）"
 
-if ldconfig -p 2>/dev/null | grep -q libavutil; then
+if ldconfig_has libavutil; then
     skip "libavutil は導入済み"
     exit 0
 fi
@@ -51,6 +52,6 @@ $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-rec
 $SUDO rm -rf /var/lib/apt/lists/*
 
 step "事後条件"
-ldconfig -p 2>/dev/null | grep -q libavutil \
+ldconfig_has libavutil \
     || die "libavutil が見つからない" "apt のリポジトリ構成を確かめてください"
 ok "$(ldconfig -p | grep -oE 'libavutil\.so\.[0-9]+' | sort -u | tr '\n' ' ')"

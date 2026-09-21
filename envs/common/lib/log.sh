@@ -42,6 +42,7 @@ require_env() {
     for _v in "$@"; do
         eval "_val=\${$_v:-}"
         [ -n "$_val" ] || die "環境変数 $_v が設定されていません" \
-            "versions.env を読み込むか、--build-arg $_v=... を渡してください"
+            "この step を呼んでいる Dockerfile の RUN 行で $_v を渡してください。
+       git の commit hash を要求する step なら、値は versions.env にあります"
     done
 }

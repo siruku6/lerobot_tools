@@ -1,25 +1,52 @@
 #!/usr/bin/env bash
-# 入力: ENV_DIR（pyproject.toml のあるディレクトリ）, VENV（作る場所）
-#       省略可: UV_PY（既定 3.12）, UV_EXTRA
+# uv で venv を作り、pyproject.toml のとおりに入れる
+#
+# Usage
+# ------
+#   # 1 段目（土台）
+#   ENV_DIR=/opt/env/base VENV=/opt/venv UV_PY=3.12 bash venv_uv.sh
+#
+#   # 2 段目（残り）
+#   ENV_DIR=/opt/env VENV=/opt/venv bash venv_uv.sh
+#
+# 入力: ENV_DIR, VENV
+#       省略可: UV_PY（既定 3.12）, UV_EXTRA, CLEAN_UV_CACHE
 # 出力: $VENV
-# 事後条件: $VENV/bin/python が動き、pyproject.toml が == で固定した版が
-#           そのとおり入っている
+# 事後条件: $VENV/bin/python と $VENV/bin/pip が在り、
+#           pyproject.toml が == で固定したバージョンがそのとおり入っている
 #
 # 必要な外部コマンド: uv
 #
+#
+# なぜ uv sync ではなく uv pip install なのか
+# ------
+# **uv sync は manifest に無いものを消す。** 2 段に分けて入れると、
+# 2 回目の sync が 1 回目に入れた torch を消してしまう（2026-09-21 に実測）。
+# uv pip install は消さないので、積み重ねられる。
+#
+#
+# なぜ 2 段に分けられるのか
+# ------
+# uv は「入っているバージョンが要求を満たしていれば手を出さない」（2026-09-21 に実測）。
+# そのため 1 段目で入れた torch は、2 段目の解決では触られない。
+#
+# それでも 2 段目の pyproject.toml に同じ固定を書いてあるのは、将来
+# 要求が変わったときに**黙って入れ替わるのではなく衝突で止める**ためである。
+#
+#
 # **どの環境を作るかは入力で決まる。** この step 自体は「uv で venv を作る」
-# 以上のことを知らない。LIBERO 用か lerobot 用かは ENV_DIR が決める。
+# 以上のことを知らない。datagen 用か train 用かは ENV_DIR が決める。
 set -euo pipefail
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_here/../lib/log.sh"
-. "$_here/../lib/guard.sh"
 
 require_env ENV_DIR VENV
 PY="${UV_PY:-3.12}"
-[ -f "$ENV_DIR/pyproject.toml" ] || die "$ENV_DIR/pyproject.toml が無い" \
-    "ENV_DIR を確かめてください"
+PROJ="$ENV_DIR/pyproject.toml"
+[ -f "$PROJ" ] || die "$PROJ が無い" "ENV_DIR の指す先を確かめてください"
+command -v uv >/dev/null 2>&1 || die "uv が無い" "イメージに uv を入れてください"
 
-step "venv: $VENV（定義 $ENV_DIR / python $PY）"
+step "venv（$VENV / python $PY）← $PROJ"
 
 if [ -x "$VENV/bin/python" ] && "$VENV/bin/python" -c "pass" 2>/dev/null; then
     skip "$VENV は既にある"
@@ -33,67 +60,40 @@ fi
 
 # **nvidia 系の wheel は取得に時間がかかる。** 既定の待ち時間だと落ちる。
 export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-300}"
-export UV_PROJECT_ENVIRONMENT="$VENV"
-# TODO: uv.lock をコミットして --frozen にする。今は解決を毎回走らせている。
-if [ -n "${UV_EXTRA:-}" ]; then
-    uv sync --project "$ENV_DIR" --extra "$UV_EXTRA"
-else
-    uv sync --project "$ENV_DIR"
-fi
 
-# **イメージに焼くときはキャッシュを残さない。** uv は取得した wheel を
-# ~/.cache/uv に貯める。同じ RUN の中で消さないとレイヤーに数 GB 残る。
-# ホストで流すときは他のプロジェクトの取得結果まで消してしまうので、
-# 消すかどうかは呼ぶ側が決める（Dockerfile が CLEAN_UV_CACHE=1 を渡す）。
+ARGS=(uv pip install --python "$VENV/bin/python" -r "$PROJ")
+[ -n "${UV_EXTRA:-}" ] && ARGS+=(--extra "$UV_EXTRA")
+"${ARGS[@]}"
+
 if [ "${CLEAN_UV_CACHE:-0}" = "1" ]; then
     uv cache clean >/dev/null 2>&1 || true
-    info "uv のキャッシュを消した"
 fi
 
 step "事後条件"
 
 # python と pip が同じ venv を指しているか。ずれていると
 # pip install の行き先がベース側になる。
-"$VENV/bin/python" - "$VENV" <<'ZZPIP'
-import sys, pathlib, shutil
-venv = pathlib.Path(sys.argv[1]).resolve()
-pip = venv / "bin" / "pip"
-if not pip.exists():
-    sys.exit(f"[venv_uv] ERROR: {pip} が無い。uv venv に --seed が付いているか確かめてください")
-print(f"    python と pip はどちらも {venv}")
-ZZPIP
-"$VENV/bin/python" - <<'PY'
-import sys
-print(f"    python {sys.version.split()[0]}")
-for mod in ("numpy", "torch"):
-    try:
-        m = __import__(mod)
-        print(f"    {mod} {m.__version__}")
-    except Exception as e:
-        print(f"    {mod} — import できない: {e}")
-PY
+[ -x "$VENV/bin/pip" ] || die "$VENV/bin/pip が無い" "uv venv に --seed が付いているか確かめてください"
 
-# **「入ったか」と「意図した版か」は別の主張である。** 指定があれば突き合わせる。
-# **pyproject.toml が == で固定した版を、実際に入ったものと突き合わせる。**
-#
-# 以前は EXPECT_NUMPY / EXPECT_TORCH を外から渡していたが、それは pyproject に
-# 書いてある値の複製だった。同じ値が 2 箇所にあると、片方だけ直して気付かない。
-# 宣言そのものを読めば複製が要らない。
-"$VENV/bin/python" - "$ENV_DIR/pyproject.toml" <<'CHECK'
+# pyproject が == で固定したバージョンを、実際に入ったものと突き合わせる。
+# **宣言そのものを読む。** 期待値を外から渡すと、同じ値が 2 箇所に現れる。
+"$VENV/bin/python" - "$PROJ" <<'ZZCHECK'
 import sys, re, tomllib
 import importlib.metadata as md
 
+def norm(n):
+    return n.lower().replace("_", "-")
+
+pins = {}
 with open(sys.argv[1], "rb") as f:
     doc = tomllib.load(f)
 deps = list(doc["project"].get("dependencies", []))
 for extra in doc["project"].get("optional-dependencies", {}).values():
     deps += extra
-
-pins = {}
 for dep in deps:
     m = re.match(r"^([A-Za-z0-9._-]+)\s*(?:\[[^\]]*\])?\s*==\s*([^\s;,]+)", dep)
     if m:
-        pins[m.group(1).lower().replace("_", "-")] = m.group(2)
+        pins[norm(m.group(1))] = m.group(2)
 
 if not pins:
     print("    == で固定された依存は無い")
@@ -113,7 +113,9 @@ for name, want in sorted(pins.items()):
         print(f"    {name} {got}")
 
 if bad:
-    sys.exit("[venv_uv] ERROR: 宣言と違う版が入っている\n  " + "\n  ".join(bad)
-             + "\n  解決の順番か index の指定を確かめてください")
-CHECK
+    sys.exit("[venv_uv] ERROR: 宣言と違うバージョンが入っている\n  " + "\n  ".join(bad)
+             + "\n  後から入れたものが上書きした可能性があります。"
+               " base/pyproject.toml と対になっているか確かめてください")
+ZZCHECK
+
 ok "$VENV"

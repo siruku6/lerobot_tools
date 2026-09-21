@@ -51,21 +51,37 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # 共通の lib と step を入れる。中では /opt/scripts/{lib,steps} に揃うので、
 # step 側の `../lib/log.sh` という参照はそのまま効く。
-COPY envs/common/lib   /opt/scripts/lib
-COPY envs/common/steps /opt/scripts/steps
+# **step は 1 本ずつ COPY する（ディレクトリごとまとめない）。**
+# docker のレイヤーキャッシュは、COPY した内容が変わるとその行より後ろを
+# 全部無効にする。まとめて COPY すると、最後に呼ぶ 1 秒の step を 1 文字
+# 直しただけで apt と venv の作り直し（20 分以上）まで巻き添えになる。
+# 実際にそれで 2 度払った。新しい step を足したときに COPY を書き忘れると
+# ビルドが exit 127 で落ちるので、黙って間違った成果物が出ることはない。
+COPY envs/common/lib /opt/scripts/lib
 
 # torchcodec が FFmpeg の共有ライブラリを dlopen で読む。
 # 先に入れておかないと lerobot の import が落ちる。
+COPY envs/common/steps/apt_video_deps.sh /opt/scripts/steps/
 RUN bash /opt/scripts/steps/apt_video_deps.sh
 
+# **1 段目: 土台（torch 系と numpy）。**
+# 下の pyproject.toml を直してもこの層は生き残る。COPY の位置が
+# キャッシュの境目になるため、変わりにくいものを先に置いている。
+COPY envs/common/steps/venv_uv.sh /opt/scripts/steps/
+COPY envs/train/base/pyproject.toml /opt/env/base/pyproject.toml
+RUN ENV_DIR=/opt/env/base VENV=/opt/venv UV_PY=3.12 CLEAN_UV_CACHE=1 \
+    bash /opt/scripts/steps/venv_uv.sh
+
+# **2 段目: 残り。** こちらの pyproject.toml にも torch と numpy の固定を
+# 書いてあるので、この解決は 1 段目のバージョンを動かせない（base と対にすること）。
 COPY envs/train/pyproject.toml /opt/env/pyproject.toml
-RUN ENV_DIR=/opt/env VENV=/opt/venv UV_PY=3.12 CLEAN_UV_CACHE=1 \
-    UV_EXTRA=training \
+RUN ENV_DIR=/opt/env VENV=/opt/venv CLEAN_UV_CACHE=1 \
     bash /opt/scripts/steps/venv_uv.sh
 
 # NPP の場所を動的リンカに教える。venv とは別の RUN にしている。
 # 登録自体は 1 秒で終わるが、同じ RUN に入れると失敗のたびに
 # venv の作り直しまで巻き添えになるためである。
+COPY envs/common/steps/register_npp.sh /opt/scripts/steps/
 RUN VENV=/opt/venv bash /opt/scripts/steps/register_npp.sh
 
 # ----------------------------------------------------------------------

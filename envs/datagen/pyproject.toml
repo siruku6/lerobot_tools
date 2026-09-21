@@ -35,10 +35,19 @@
 # なぜ python 3.12 なのか
 # ------
 # lerobot v0.6.0 が requires-python >= 3.12 を宣言しており、動かせない。
-# LIBERO 側はこの版を要求しない（3.10 でも 3.12 でも入り、import も通ることを
+# LIBERO 側はこのバージョンを要求しない（3.10 でも 3.12 でも入り、import も通ることを
 # 実測した）ので、lerobot に合わせている。
 #
 # 評価イメージが 3.10 なのは採点環境がそうだからで、LIBERO の都合ではない。
+#
+#
+# なぜ torch 系を base/pyproject.toml と両方に書くのか
+# ------
+# 実際に入れるのは 1 段目（base/pyproject.toml）である。**後から入れるものに
+# 差し替えられないように分けてあり**、そちらの頭に理由が書いてある。
+# こちらにも同じ `==` を書いてあるのは、将来このファイルに足したライブラリが
+# 別の torch を要求したとき、**黙って入れ替わらずに依存の衝突として止まる**
+# ようにするためである。両方のバージョンがずれた場合も同じく止まる。
 #
 #
 # なぜ lerobot を --no-deps で入れるのか
@@ -48,8 +57,8 @@
 # ことで numpy を守る。提出物が vendoring で同じことをしている。
 #
 # **迂回した分の責任はこちらが持つ。** lerobot の依存は下に自分で並べてある。
-# 版を書いていないものは lerobot の宣言をそのまま写した。
-# （av を版指定なしで入れて import が壊れたことがある。2026-09-21）
+# バージョンを書いていないものは lerobot の宣言をそのまま写した。
+# （av をバージョン指定なしで入れて import が壊れたことがある。2026-09-21）
 [project]
 name = "lerobot-tools-datagen"
 version = "0.1.0"
@@ -57,9 +66,27 @@ description = "データを作るための環境（シミュレータと LeRobot
 requires-python = ">=3.12"
 
 dependencies = [
-    # --- 全体を貫く版 ---
-    "numpy==1.26.4",            # 上の注記のとおり。上げてはいけない
+
+    # --- 土台側と同じ固定を書く（base/pyproject.toml と対にすること） ---
+    #
+    # **後から入れるものに差し替えられないため。** uv は「入っているバージョンが
+    # 要求を満たしていれば手を出さない」ので、今の依存構成では書かなくても
+    # 差し替わらない（2026-09-21 に実測）。書くのは将来への備えである。
+    #
+    # lerobot が将来 torch>=2.12 を要求するようになったら、何も書かなければ
+    # **黙って PyPI 既定の torch に入れ替わる**（CUDA の系統が変わっても
+    # インストールは成功し、実行時まで気付けない）。ここに書いておけば
+    # 衝突として止まる。
+    #
+    # base 側とバージョンがずれた場合も衝突で止まるので、黙って壊れることはない。
     "torch==2.11.0+cu130",
+    "numpy==1.26.4",
+    "torchvision==0.26.0",
+    "torchcodec==0.11.1",
+
+    # NPP も同じ理由で書く。**cu13 系の NPP はこの接尾辞の無い名前で配布される。**
+    # 上の torch が cu130 なので so.13 が要る（詳細は base/pyproject.toml）。
+    "nvidia-npp==13.2.0.58",
 
     # --- 1・2 段目: シミュレータを回す（LIBERO-plus が import するもの） ---
     "bddl==3.6.0",
@@ -90,12 +117,10 @@ dependencies = [
     # 手で並べると抜ける（gymnasium / cmake / setuptools を落として import が
     # 壊れた。2026-09-21）。lerobot を上げるときは、この一覧を宣言と
     # 突き合わせ直すこと。
-    "nvidia-npp-cu12",          # torchcodec が NPP へ直接リンクする。
-                                # 場所を動的リンカに教えるのは register_npp.sh
 
     "av==15.1.0",               # 宣言は >=15.0.0,<16.0.0。範囲のままだと
                                 # module 'av' has no attribute 'option' で
-                                # import が壊れる版が入りうる（2026-09-21 実測）
+                                # import が壊れるバージョンが入りうる（2026-09-21 実測）
     "cmake>=3.29.0.1,<4.2.0",
     "datasets>=4.7.0,<5.0.0",
     "draccus==0.10.0",
@@ -112,10 +137,17 @@ dependencies = [
     "safetensors>=0.4.3,<1.0.0",
     "setuptools>=71.0.0,<81.0.0",
     "termcolor>=2.4.0,<4.0.0",
-    "torchcodec==0.11.1",
-    "torchvision==0.26.0",
     "tqdm>=4.66.0,<5.0.0",
     # --- 作業で使うもの ---
+    # 軌道の平滑化に使う（solution/tools/motion/ と regen/render_prealign_pairs.py）。
+    # **python 3.12 用の manylinux wheel が在るので、そのまま入る。**
+    # 以前は評価用イメージ（python 3.10）へ持ち込むために
+    #   pip install --target ... --python-version 310 --only-binary=:all: \
+    #       --platform manylinux_2_28_x86_64 ruckig
+    # という形で vendor ディレクトリに落としていたが、この image は 3.12 なので
+    # その回避策は要らない。バージョンは当時使っていたものに合わせてある。
+    "ruckig==0.19.4",
+
     "msgpack==1.2.1",
     "requests>=2.34.2",
     "pytest>=9.1.1",
@@ -124,8 +156,9 @@ dependencies = [
 [tool.uv]
 index-strategy = "unsafe-best-match"
 
-# torch 三点だけ pytorch の index に縛る。
-# nvidia-npp-cu12 はそちらのミラーに無いので素の PyPI から解決させる。
+# **base/pyproject.toml と同じ index を書く。** 上の torch 三点を解決する
+# ときに、ここが無いと PyPI を探しに行き、+cu 付きのビルドが「見つからない」
+# という分かりにくいエラーになる。
 [tool.uv.sources]
 torch = { index = "pytorch" }
 torchvision = { index = "pytorch" }

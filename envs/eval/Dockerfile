@@ -52,9 +52,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # step 側の `../lib/log.sh` という参照はそのまま効く。
 # 共通の lib と step、このイメージ専用の step を、同じ場所へ重ねて入れる。
 # apt_sim_deps.sh は common 側に在る（datagen も使うため）。
-COPY envs/common/lib   /opt/scripts/lib
-COPY envs/common/steps /opt/scripts/steps
-COPY envs/eval/steps   /opt/scripts/steps
+# **step は 1 本ずつ COPY する（ディレクトリごとまとめない）。**
+# docker のレイヤーキャッシュは、COPY した内容が変わるとその行より後ろを
+# 全部無効にする。まとめて COPY すると、最後に呼ぶ 1 秒の step を 1 文字
+# 直しただけで apt と venv の作り直し（20 分以上）まで巻き添えになる。
+# 実際にそれで 2 度払った。新しい step を足したときに COPY を書き忘れると
+# ビルドが exit 127 で落ちるので、黙って間違った成果物が出ることはない。
+COPY envs/common/lib /opt/scripts/lib
+COPY envs/common/steps/apt_sim_deps.sh /opt/scripts/steps/
+COPY envs/eval/steps /opt/scripts/steps
 RUN bash /opt/scripts/steps/apt_sim_deps.sh
 
 COPY envs/eval/requirements.txt /opt/env/requirements.txt

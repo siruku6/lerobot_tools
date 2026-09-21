@@ -55,3 +55,15 @@ clone_pinned() {
     git -C "$_dir" checkout -q FETCH_HEAD
     ok "$_dir を $_ref で取得"
 }
+
+# ldconfig_has <名前> → 動的リンカが探せる共有ライブラリにその名前があれば 0 を返す
+#
+# **`ldconfig -p | grep -q <名前>` と書いてはいけない。** grep -q は最初の一致で即座に
+# 終了するため、まだ出力を書いている途中の ldconfig が SIGPIPE で死に、set -o pipefail の
+# 下では**登録されているのに「無い」と判定される。** 実際に docker build を落とした。
+# → docs/ADR/0004-no-early-exit-grep-under-pipefail.md
+# 出力を変数に受けてから照合すればパイプが無くなり、この競合は起きない。
+ldconfig_has() {
+    _ld="$(ldconfig -p 2>/dev/null || true)"
+    case "$_ld" in (*"$1"*) return 0 ;; (*) return 1 ;; esac
+}

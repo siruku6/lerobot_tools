@@ -28,10 +28,11 @@
 set -euo pipefail
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_here/../lib/log.sh"
+. "$_here/../lib/guard.sh"
 
 step "シミュレータ用のシステム依存"
 
-if ldconfig -p 2>/dev/null | grep -q libMagickWand; then
+if ldconfig_has libMagickWand; then
     skip "libMagickWand は導入済み"
     exit 0
 fi
@@ -57,6 +58,6 @@ $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-rec
 $SUDO rm -rf /var/lib/apt/lists/*
 
 step "事後条件"
-ldconfig -p 2>/dev/null | grep -q libMagickWand \
+ldconfig_has libMagickWand \
     || die "libMagickWand が見つからない" "apt のリポジトリ構成を確かめてください"
 ok "$(ldconfig -p | grep -c . ) 個の共有ライブラリが登録済み"

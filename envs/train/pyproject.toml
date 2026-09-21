@@ -14,7 +14,7 @@
 # ------
 # numpy が違う。datagen は評価と同じ 1.26.4 で揃える必要があるが、
 # 学習はこれまで 2.2.6 で回してきた（2026-09-17 の学習イメージの記録で確認）。
-# 実績のある版を動かす理由が無いので、そのままにしてある。
+# 実績のあるバージョンを動かす理由が無いので、そのままにしてある。
 #
 # 役割も違う。datagen はデータを作り、ここはそれを使う。
 #
@@ -23,7 +23,7 @@
 # ------
 # 以前は固定しておらず、lerobot の numpy>=2.0.0,<2.3.0 を解決器が解いた
 # 結果として 2.2.6 が入っていた。**解いた結果は、いつ解くかで変わる。**
-# これまで学習に使ってきた版をそのまま書いておく。
+# これまで学習に使ってきたバージョンをそのまま書いておく。
 #
 #
 # なぜ python 3.12 なのか
@@ -31,10 +31,19 @@
 # lerobot v0.6.0 が requires-python >= 3.12 を宣言しており、動かせない。
 #
 #
+# なぜ torch 系を base/pyproject.toml と両方に書くのか
+# ------
+# 実際に入れるのは 1 段目（base/pyproject.toml）である。**後から入れるものに
+# 差し替えられないように分けてあり**、そちらの頭に理由が書いてある。
+# こちらにも同じ `==` を書いてあるのは、将来 lerobot が別の torch を要求する
+# ようになったとき、**黙って入れ替わらずに依存の衝突として止まる**ように
+# するためである。両方のバージョンがずれた場合も同じく止まる。
+#
+#
 # なぜ PyPI から入れる（git clone しない）のか
 # ------
 # 移行元は v0.6.0 のタグを clone して pip install -e していたが、
-# PyPI の 0.6.0 は同じ版であり、必要な extras（dataset / training / pi）も
+# PyPI の 0.6.0 は同じバージョンであり、必要な extras（dataset / training / pi）も
 # 揃っている。clone の取り回しを持ち込む理由が無い。
 #
 # datagen 側が --no-deps で入れているのとは事情が違う。あちらは numpy の
@@ -46,42 +55,39 @@ description = "LeRobot 形式のデータを扱うための環境（numpy 2.x �
 requires-python = ">=3.12"
 
 dependencies = [
-    # **torch / torchcodec / torchvision は版だけでなく CUDA の系統も対で決まる。**
-    # torchcodec は依存を一切宣言しないのに torch の ABI へ直接リンクしている。
-    # pip は不整合を検出できず、インストールは成功して実行時に落ちる。
-    # 版は LeRobot v0.6.0 の uv.lock が解決した組み合わせに揃えてある。
+
+    # --- 土台側と同じ固定を書く（base/pyproject.toml と対にすること） ---
+    #
+    # **後から入れるものに差し替えられないため。** uv は「入っているバージョンが
+    # 要求を満たしていれば手を出さない」ので、今の依存構成では書かなくても
+    # 差し替わらない（2026-09-21 に実測）。書くのは将来への備えである。
+    #
+    # lerobot が将来 torch>=2.12 を要求するようになったら、何も書かなければ
+    # **黙って PyPI 既定の torch に入れ替わる**（CUDA の系統が変わっても
+    # インストールは成功し、実行時まで気付けない）。ここに書いておけば
+    # 衝突として止まる。
+    #
+    # base 側とバージョンがずれた場合も衝突で止まるので、黙って壊れることはない。
     "torch==2.11.0+cu128",
+    "numpy==2.2.6",
     "torchvision==0.26.0",
     "torchcodec==0.11.1",
 
-    # torchcodec のコアが CUDA の NPP（画像・色空間変換）へ直接リンクしている。
-    # torch 自身は NPP を使わないため、torch の wheel 群には含まれない。
-    # **入れるだけでは足りない。** 動的リンカに場所を教える必要があり、
-    # それは scripts/steps/register_npp.sh が行う。
-    "nvidia-npp-cu12",
-
-    # **numpy を固定する。** 宣言（>=2.0.0,<2.3.0）に任せると、解く時期で
-    # 版が変わる。これまで学習に使ってきた 2.2.6 を書いておく。
-    "numpy==2.2.6",
-
-    # **av も固定する。** lerobot の宣言は >=15.0.0,<16.0.0 だが、
-    # 範囲の中で版が動くと import が壊れることがある
+    # **av は固定する。** lerobot の宣言は >=15.0.0,<16.0.0 だが、
+    # 範囲の中でバージョンが動くと import が壊れることがある
     # （datagen 側で module 'av' has no attribute 'option' を実測。2026-09-21）
     "av==15.1.0",
 
-    # データの読み書きだけ。学習用の一式は下の extra にある。
-    "lerobot[dataset]==0.6.0",
+    # 学習に要る一式（dataset を内包する）。
+    "lerobot[training,pi]==0.6.0",
 ]
-
-[project.optional-dependencies]
-# 学習イメージはこちらを使う: uv sync --extra training
-training = ["lerobot[training,pi]==0.6.0"]
 
 [tool.uv]
 index-strategy = "unsafe-best-match"
 
-# **torch 三点だけを pytorch の index に縛る。** nvidia-npp-cu12 は
-# そちらのミラーに無いので、素の PyPI から解決させる。
+# **base/pyproject.toml と同じ index を書く。** 上の torch 三点を解決する
+# ときに、ここが無いと PyPI を探しに行き、+cu 付きのビルドが「見つからない」
+# という分かりにくいエラーになる。
 [tool.uv.sources]
 torch = { index = "pytorch" }
 torchvision = { index = "pytorch" }

@@ -1,0 +1,93 @@
+# datagen の土台（重くて、めったに変わらないもの）
+#
+# Usage
+# ------
+#   uv pip install -r base/pyproject.toml
+#   （envs/datagen/Dockerfile が venv_uv.sh 経由で呼ぶ）
+#
+# Effect
+# ------
+# venv に torch 系と numpy が入る。venv 全体 12GB のうち約 7GB がここで決まる。
+#
+#
+# なぜ 1 つ上の pyproject.toml と分けるのか
+# ------
+# **ライブラリを 1 つ足したときに、torch を取り直さないため。**
+#
+# docker のレイヤーキャッシュは「その RUN より前の COPY の内容」で決まる。
+# 全部を 1 つの pyproject.toml に書くと、軽いライブラリを 1 行足しただけで
+# torch の層まで無効になり、再取得に 7 分かかる（実測。所要 428 秒のうち
+# 422 秒が取得だった）。
+#
+# このファイルを先に COPY して先に入れておけば、上の pyproject.toml を
+# いくら直しても、この層は生き残る。
+#
+# **uv sync ではなく uv pip install を使う必要がある。** uv sync は
+# manifest に無いものを消すので、2 回目の sync が torch を消してしまう
+# （2026-09-21 に実測）。
+#
+#
+# なぜ numpy もここに書くのか
+# ------
+# numpy は torch の依存として引かれる。ここで固定しておかないと、
+# 1 段目で別のバージョン（実測では 2.5.3）が入り、2 段目で入れ替わることになる。
+# **datagen は numpy 1.26.4 であることが要件**なので、最初から正しいバージョンを入れる。
+#
+#
+# なぜ triton や nvidia-* を書かないのか
+# ------
+# torch の依存として自動で付いてくる（nvidia/ だけで 4.6GB、triton 639MB）。
+# 明示すると torch 自身の宣言と重複し、片方だけ古くなる。
+#
+# 例外が NPP（nvidia-npp）で、これは torch の依存ではない。torchcodec が
+# NPP へ直接リンクしているのに、torch 自身は NPP を使わないため付いてこない。
+[project]
+name = "lerobot-tools-datagen-base"
+version = "0.1.0"
+description = "datagen の土台（torch 系と numpy）"
+requires-python = ">=3.12"
+
+dependencies = [
+    # **バージョンだけでなく CUDA の系統も対で決まる。**
+    # torchcodec は依存を一切宣言しないのに torch の ABI へ直接リンクしている。
+    # pip は不整合を検出できず、インストールは成功して実行時に落ちる。
+    "torch==2.11.0+cu130",
+    "torchvision==0.26.0",
+    "torchcodec==0.11.1",
+
+    # torchcodec のコアが CUDA の NPP（画像・色空間変換）へ直接リンクする。
+    #
+    # **NPP は torch と同じ CUDA 系統のものを選ぶ。** 上の torch が cu130 なので
+    # torchcodec も cu130 向けにビルドされたものになり、それが要求する共有ライブラリは
+    # libnppicc.so.13 である。cu13 系の NPP を配布しているパッケージ名は
+    # 接尾辞の無い nvidia-npp。**nvidia-npp-cu12 を入れると so.12 しか置かれず、
+    # インストールは成功して torchcodec の import 時に落ちる**（実際に起きた。
+    # docs/ADR/0001-torch-stack-pinning.md 参照）。
+    # なお nvidia-npp-cu13 という名前のパッケージも PyPI に在るが、中身が無く
+    # インストールに失敗する（2026-09-21 に確認）ので使わない。
+    #
+    # **入れるだけでは足りない。** 動的リンカに場所を教える必要があり、
+    # それは common/steps/register_npp.sh が行う。
+    "nvidia-npp==13.2.0.58",
+
+    # **評価と同じバージョンにする。** ここで作ったデータは評価が読み直す。
+    # numpy 2 で dtype の昇格規則（NEP 50）が変わり、同じコードが違う値を返しうる。
+    "numpy==1.26.4",
+]
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+
+# torch 三点だけ pytorch の index に縛る。
+# nvidia-npp はそちらのミラーに無いので素の PyPI から解決させる。
+#
+# **この指定は uv pip install でも効く**（2026-09-21 に実測。PyPI 既定が
+# cu130 のところへ cu128 を指定して、cu128 が入ることを確かめた）。
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+torchcodec = { index = "pytorch" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu130"

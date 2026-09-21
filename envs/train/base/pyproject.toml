@@ -1,0 +1,91 @@
+# train の土台（重くて、めったに変わらないもの）
+#
+# Usage
+# ------
+#   uv pip install -r base/pyproject.toml
+#   （envs/train/Dockerfile が venv_uv.sh 経由で呼ぶ）
+#
+# Effect
+# ------
+# venv に torch 系と numpy が入る。venv 全体 8.4GB のうち約 6.8GB がここで決まる
+#   nvidia/ 4.6GB ＋ torch/ 1.6GB ＋ triton/ 639MB（いずれも実測）
+#
+#
+# なぜ 1 つ上の pyproject.toml と分けるのか
+# ------
+# **後から入れるものに torch を差し替えられないため。**
+#
+# lerobot は torch>=2.7,<2.12.0 を宣言している。2 段目の解決は 1 段目の
+# 意図を知らないので、放っておくと PyPI 既定の torch で入れ替えうる。
+# **CUDA の系統が cu128 から変わっても、インストールは成功して実行時まで
+# 気付けない。** そのため 1 つ上の pyproject.toml にも同じ固定を書いてある。
+# バージョンがずれれば衝突で止まるので、黙って壊れることはない。
+#
+# なお uv は「入っているバージョンが要求を満たしていれば手を出さない」ので、
+# 今の依存構成では書かなくても差し替わらない（2026-09-21 に実測）。
+# 書いてあるのは将来への備えである。
+#
+# 副次的に、ライブラリを 1 つ足したときに torch を取り直さずに済む。
+# docker のレイヤーキャッシュは「その RUN より前の COPY の内容」で決まるので、
+# このファイルを先に COPY しておけば、上の pyproject.toml を直しても
+# この層は生き残る（再取得は実測で 7 分かかる）。
+#
+# **uv sync ではなく uv pip install を使う必要がある。** uv sync は
+# manifest に無いものを消すので、2 回目の sync が torch を消してしまう。
+#
+#
+# なぜ numpy もここに書くのか
+# ------
+# numpy は torch の依存として引かれる。ここで固定しておかないと、
+# 1 段目で別のバージョンが入り、2 段目で入れ替わることになる（実測で 2.5.3 → 2.2.6）。
+#
+#
+# なぜ triton や nvidia-* を書かないのか
+# ------
+# torch の依存として自動で付いてくる。明示すると torch 自身の宣言と重複し、
+# 片方だけ古くなる。例外が nvidia-npp-cu12 で、torch の依存ではない。
+[project]
+name = "lerobot-tools-train-base"
+version = "0.1.0"
+description = "train の土台（torch 系と numpy）"
+requires-python = ">=3.12"
+
+dependencies = [
+    # **バージョンだけでなく CUDA の系統も対で決まる。**
+    # torchcodec は依存を一切宣言しないのに torch の ABI へ直接リンクしている。
+    # pip は不整合を検出できず、インストールは成功して実行時に落ちる。
+    # バージョンは LeRobot v0.6.0 の uv.lock が解決した組み合わせに揃えてある。
+    "torch==2.11.0+cu128",
+    "torchvision==0.26.0",
+    "torchcodec==0.11.1",
+
+    # torchcodec のコアが CUDA の NPP（画像・色空間変換）へ直接リンクする。
+    # torch 自身は NPP を使わないため付いてこない。
+    #
+    # **NPP は torch と同じ CUDA 系統のものを選ぶ。** 上の torch が cu128 なので
+    # torchcodec も cu128 向けにビルドされたものになり、要求する共有ライブラリは libnppicc.so.12 で
+    # ある。cu12 系はこの nvidia-npp-cu12 が配布している。**系統を間違えると
+    # インストールは成功して torchcodec の import 時に落ちる**
+    # （docs/ADR/0001-torch-stack-pinning.md 参照）。
+    #
+    # 場所を動的リンカに教えるのは common/steps/register_npp.sh。
+    "nvidia-npp-cu12==12.4.1.87",
+
+    # **これまで学習に使ってきたバージョン。** 宣言（>=2.0.0,<2.3.0）に任せると、
+    # 解く時期でバージョンが変わる。
+    "numpy==2.2.6",
+]
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+
+# torch 三点だけ pytorch の index に縛る。
+# **この指定は uv pip install でも効く**（2026-09-21 に実測）。
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+torchcodec = { index = "pytorch" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu128"
