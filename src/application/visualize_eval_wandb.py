@@ -22,6 +22,7 @@ Usage
         --run-dir /outputs/eval/wiring_check --wandb-run-name wiring_check
 
 Reads:
+  - <run-dir>/run_meta.json      **何で回したか**（ポリシーの種類）
   - <run-dir>/episodes.json      エピソード一覧
   - <run-dir>/arrays/*.npz       軌道
   - <run-dir>/frames/*/*.jpg     映像のもと
@@ -73,6 +74,22 @@ def _task_label(task_name: str, task_index: int) -> str:
     元の名前は表（eval/episodes）の task_name 列に残る。
     """
     return f"t{task_index}_{task_name[:MAX_TASK_LABEL_LENGTH]}"
+
+
+def _load_run_meta(run_dir: Path) -> dict[str, Any]:
+    """評価を何で回したかを読む。
+
+    evaluate_libero.py が書く run_meta.json には、ランダムポリシー（配線の確認用）
+    かポリシーサーバーかが入っている。**この値を wandb の config に載せる**ので、
+    後から run を見たときに、その数字がどちらのものか分かる。
+
+    無い場合は unknown として扱う（古い出力を読めるようにするため）。
+    """
+    path = run_dir / "run_meta.json"
+    if not path.exists():
+        logger.warning("%s が無いため、ポリシーの種類は unknown として記録します", path)
+        return {"policy_kind": "unknown"}
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _parse_args() -> argparse.Namespace:
@@ -314,6 +331,7 @@ def main() -> None:
     run_dir: Path = args.run_dir
     episodes = _load_episodes(run_dir)
     score_document = _load_score_document(run_dir)
+    meta = _load_run_meta(run_dir)
 
     # **評価は学習とは別の run にする。** 学習の run に相乗りすると、
     # step 軸が学習のものなので混ざる。group で並べて見る。
@@ -324,6 +342,10 @@ def main() -> None:
         config={
             "eval_run_dir": str(run_dir),
             "n_episodes": len(episodes),
+            # **何で回したかを残す。** ランダムポリシー（配線の確認）と
+            # ポリシーサーバー（重みの成績）を、後から区別できるようにするため。
+            "policy_kind": meta.get("policy_kind", "unknown"),
+            "server_url": meta.get("server_url"),
             "train_run_id": args.train_run_id,
         },
     )

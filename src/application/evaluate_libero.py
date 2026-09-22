@@ -34,6 +34,7 @@ Reads:
   - /reference/pipeline/（評価パイプラインの原本）
   - /reference/compe/t1/T1_TASKS.csv（libero_t1 の課題定義。pipeline が読む）
 Generates:
+  - <出力先>/run_meta.json         **何で回したか**（ポリシーの種類・本数・打ち切り）
   - <出力先>/<submission_id>.json  採点結果（pipeline 自身が書く）
   - <出力先>/episodes.json         エピソード一覧（成否・ステップ数・衝突）
   - <出力先>/arrays/<番号>.npz     軌道（手先位置・姿勢・関節角・行動・報酬・物体位置）
@@ -155,12 +156,19 @@ class RecordingPolicy:
 
 
 def _to_viewable(image: np.ndarray) -> np.ndarray:
-    """シミュレータが返した画像を、人が見て上下の正しい向きに直す。
+    """シミュレータが返した画像を、ポリシーが見ているのと同じ向きに直す。
 
-    MuJoCo のオフスクリーン描画は画像を**上下反転して**返す。移行元の
-    ツール群も一貫して `[::-1]` を掛けてから保存・表示している。
+    **180 度回す（上下と左右の両方を反転する）。** 上下だけ反転しても人の目には
+    正しい向きに見えるが、**左右が鏡になる**ため、ポリシーが見ている絵とは
+    別物になる。それでは映像を見て失敗の原因を判断できない。
+
+    この 180 度という値は 2 つの出所が一致している。
+      - 学習データの作り手: PARC2026_pre の scripted_demo.py:1264 が
+        `agentview_image[::-1, ::-1]` を保存している
+      - 推論時の前処理: LeRobot の LiberoProcessorStep が
+        `torch.flip(img, dims=[2, 3])`（高さと幅の両方）を掛ける
     """
-    return np.ascontiguousarray(image[::-1])
+    return np.ascontiguousarray(image[::-1, ::-1])
 
 
 class RandomPolicy:
@@ -227,8 +235,8 @@ def _build_eval_config(args: argparse.Namespace, output_dir: Path) -> Any:
     return config
 
 
-def _build_policy(args: argparse.Namespace) -> tuple[Any, str]:
-    """評価対象のポリシーと、結果ファイルに付ける名前を決める。
+def _build_policy(args: argparse.Namespace) -> tuple[Any, str, str]:
+    """評価対象のポリシーと、結果ファイルに付ける名前・ポリシーの種類を決める。
 
     Returns
     -------
@@ -236,10 +244,14 @@ def _build_policy(args: argparse.Namespace) -> tuple[Any, str]:
         get_action / reset を持つオブジェクト。
     submission_id : str
         採点結果の JSON のファイル名になる。
+    policy_kind : str
+        "random"（配線確認用の乱数）か "server"（ポリシーサーバー）。
+        **この値は記録に残す。** 乱数で回した結果を、学習した重みの成績だと
+        取り違えられないようにするためである（実際にその取り違えが起きた）。
     """
     if args.dry_run:
-        logger.info("ランダムポリシーで実行します（配線の確認）")
-        return RandomPolicy(), "dry_run"
+        logger.info("ランダムポリシーで実行します（配線の確認。**重みは一切使いません**）")
+        return RandomPolicy(), "dry_run", "random"
 
     if not args.server_url:
         raise SystemExit("--dry-run か --server-url のどちらかを指定してください")
@@ -249,7 +261,7 @@ def _build_policy(args: argparse.Namespace) -> tuple[Any, str]:
     logger.info("ポリシーサーバーに接続します: %s", args.server_url)
     client = RemotePolicyClient(server_url=args.server_url, timeout_sec=args.timeout)
     client.wait_for_server()
-    return client, args.run_name
+    return client, args.run_name, "server"
 
 
 def _install_result_capture(pipeline: Any) -> list[Any]:
@@ -346,7 +358,7 @@ def _write_records(
     )
 
 
-def _make_host_writable(output_dir: Path) -> None:
+def _make_host_writable(output_dir: Path, output_root: Path) -> None:
     """出力一式を、コンテナの外からも消せる権限にする。
 
     **eval イメージは root で動く**（採点環境と同じ条件を保つため）。そのまま
@@ -359,7 +371,10 @@ def _make_host_writable(output_dir: Path) -> None:
     if os.geteuid() != 0:
         return
     writable_for_all = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
-    for path in [output_dir, *output_dir.rglob("*")]:
+    # **親ディレクトリも開ける。** ディレクトリの中身を消すには、その
+    # ディレクトリ自身ではなく**親**への書き込み権限が要る。出力先だけを
+    # 開けても、ホスト側からはその出力先を消せない（実際にそうなった）。
+    for path in [output_root, output_dir, *output_dir.rglob("*")]:
         try:
             os.chmod(path, writable_for_all)
         except OSError:
@@ -392,7 +407,7 @@ def main() -> None:
     output_dir: Path = args.output_root / args.run_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    inner_policy, submission_id = _build_policy(args)
+    inner_policy, submission_id, policy_kind = _build_policy(args)
     recording_policy = RecordingPolicy(
         inner_policy=inner_policy,
         frames_root=None if args.no_frames else output_dir / "frames",
@@ -414,8 +429,25 @@ def main() -> None:
         skip_validation=True,
     )
 
+    (output_dir / "run_meta.json").write_text(
+        json.dumps(
+            {
+                "policy_kind": policy_kind,
+                "server_url": args.server_url,
+                "submission_id": submission_id,
+                "benchmark": args.benchmark,
+                "n_episodes": args.n_episodes,
+                "max_steps": args.max_steps,
+                "seed": args.seed,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
     _write_records(output_dir, captured_task_results, recording_policy.episodes)
-    _make_host_writable(output_dir)
+    _make_host_writable(output_dir, args.output_root)
     _print_summary(result, output_dir)
 
 
